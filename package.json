@@ -15,6 +15,7 @@
 	"dependencies": {
 		"@opennextjs/cloudflare": "^1.17.1",
 		"@supabase/supabase-js": "^2.101.0",
+		"nanoid": "^5.1.7",
 		"next": "16.1.5",
 		"postgres": "^3.4.8",
 		"react": "19.1.5",

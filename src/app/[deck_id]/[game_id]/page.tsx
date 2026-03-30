@@ -5,9 +5,8 @@ import { useParams, useRouter } from 'next/navigation';
 import Card from '@/components/Card';
 import Confetti from '@/components/Confetti';
 import WinnerModal from '@/components/WinnerModal';
-import decksData from '@/data/decks.json';
-import { getDeckById, parsePairs } from '@/types/deck';
 import { getSessionInfo, setPlayerName, getAllSessions, sendHeartbeat } from './actions';
+import { fetchGameById } from '@/app/actions/games';
 
 interface CardData {
   id: number;
@@ -110,51 +109,17 @@ export default function GamePage() {
   }, [allSessions]);
 
   useEffect(() => {
-    // Load deck data
-    const deck = getDeckById(decksData, deckId);
+    // Load game data from database
+    fetchGameById(gameId).then(({ game }) => {
+      if (!game) {
+        setDeckNotFound(true);
+        return;
+      }
 
-    if (!deck) {
-      setDeckNotFound(true);
-      return;
-    }
-
-    // Parse card pairs
-    const cardPairs = parsePairs(deck.pairs);
-
-    // Create cards with random rotations
-    const expandedCards: CardData[] = [];
-    cardPairs.forEach((pair, index) => {
-      const rotation1 = Math.random() * 10 - 5;
-      const rotation2 = Math.random() * 10 - 5;
-
-      expandedCards.push(
-        {
-          id: index * 2,
-          content: pair.front,
-          pairId: index,
-          isFlipped: false,
-          isMatched: false,
-          rotation: rotation1,
-        },
-        {
-          id: index * 2 + 1,
-          content: pair.back,
-          pairId: index,
-          isFlipped: false,
-          isMatched: false,
-          rotation: rotation2,
-        }
-      );
+      // Use the shuffled cards from the database
+      setCards(game.cards);
     });
-
-    // Shuffle cards
-    for (let i = expandedCards.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [expandedCards[i], expandedCards[j]] = [expandedCards[j], expandedCards[i]];
-    }
-
-    setCards(expandedCards);
-  }, [deckId]);
+  }, [gameId]);
 
   const handleCardClick = (id: number) => {
     // Prevent clicking during checking or if card is already flipped/matched

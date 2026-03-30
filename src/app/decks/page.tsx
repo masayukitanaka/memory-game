@@ -1,26 +1,44 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import decksData from '@/data/decks.json';
 import { Deck } from '@/types/deck';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import { fetchAllDecks } from '@/app/actions/decks';
+import { createNewGame } from '@/app/actions/games';
 
 export default function DecksPage() {
   const router = useRouter();
   const [selectedDeck, setSelectedDeck] = useState<Deck | null>(null);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [decks, setDecks] = useState<Deck[]>([]);
+  const [isCreatingGame, setIsCreatingGame] = useState(false);
+
+  useEffect(() => {
+    // Load all decks from database
+    fetchAllDecks().then(({ decks }) => {
+      setDecks(decks);
+    });
+  }, []);
 
   const handleDeckClick = (deck: Deck) => {
     setSelectedDeck(deck);
     setShowConfirmDialog(true);
   };
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     if (selectedDeck) {
-      // Generate a unique game ID
-      const gameId = `game-${Date.now()}`;
-      router.push(`/${selectedDeck.deck_id}/${gameId}`);
+      setIsCreatingGame(true);
+      try {
+        // Create a new game in the database with shuffled cards
+        const { gameId } = await createNewGame(selectedDeck.deck_id, selectedDeck.pairs);
+        // Navigate to the game page
+        router.push(`/${selectedDeck.deck_id}/${gameId}`);
+      } catch (error) {
+        console.error('Failed to create game:', error);
+        alert('Failed to create game. Please try again.');
+        setIsCreatingGame(false);
+      }
     }
   };
 
@@ -51,7 +69,7 @@ export default function DecksPage() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {decksData.decks.map((deck) => (
+          {decks.map((deck) => (
             <button
               key={deck.deck_id}
               onClick={() => handleDeckClick(deck)}
@@ -92,7 +110,7 @@ export default function DecksPage() {
           ))}
         </div>
 
-        {decksData.decks.length === 0 && (
+        {decks.length === 0 && (
           <div className="text-center py-16">
             <div className="text-6xl mb-4">📦</div>
             <p className="text-gray-500 text-lg">No decks available</p>
