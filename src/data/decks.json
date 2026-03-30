@@ -1,0 +1,54 @@
+{
+  "decks": [
+    {
+      "deck_id": "hiragana-katakana",
+      "description": "Match hiragana characters with their katakana equivalents",
+      "number_of_cards": 20,
+      "pairs": [
+        "あ",
+        "ア",
+        "い",
+        "イ",
+        "う",
+        "ウ",
+        "え",
+        "エ",
+        "お",
+        "オ",
+        "か",
+        "カ",
+        "き",
+        "キ",
+        "く",
+        "ク",
+        "け",
+        "ケ",
+        "こ",
+        "コ"
+      ]
+    },
+    {
+      "deck_id": "english-japanese-basics",
+      "description": "Match common English phrases with their Japanese translations",
+      "number_of_cards": 16,
+      "pairs": [
+        "Hello",
+        "こんにちは",
+        "Thank you",
+        "ありがとう",
+        "Good morning",
+        "おはよう",
+        "Goodbye",
+        "さようなら",
+        "Yes",
+        "はい",
+        "No",
+        "いいえ",
+        "Please",
+        "お願いします",
+        "Sorry",
+        "ごめんなさい"
+      ]
+    }
+  ]
+}
