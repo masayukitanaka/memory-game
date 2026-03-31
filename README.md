@@ -11,7 +11,7 @@ Read the documentation at https://opennext.js.org/cloudflare.
 Run the Next.js development server:
 
 ```bash
-npm run dev
+wrangler dev --local
 # or similar package manager command
 ```
 
