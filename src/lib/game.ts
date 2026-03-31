@@ -1,23 +1,11 @@
 import postgres from 'postgres';
-import { getCloudflareContext } from '@opennextjs/cloudflare';
 import { nanoid } from 'nanoid';
 
 // PostgreSQL client
 function getDB() {
-  // Try to get from Cloudflare context first (works in dev and production)
-  try {
-    const { env } = getCloudflareContext();
-    if (env.SUPABASE_CONNECTION_STRING) {
-      return postgres(env.SUPABASE_CONNECTION_STRING);
-    }
-  } catch (e) {
-    // Cloudflare context not available, fallback to process.env
-  }
-
-  // Fallback to process.env
   const connectionString = process.env.SUPABASE_CONNECTION_STRING;
   if (!connectionString) {
-    throw new Error('SUPABASE_CONNECTION_STRING is not defined in Cloudflare env or process.env');
+    throw new Error('SUPABASE_CONNECTION_STRING is not defined');
   }
   return postgres(connectionString);
 }

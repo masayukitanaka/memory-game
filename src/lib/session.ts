@@ -1,26 +1,14 @@
 import postgres from 'postgres';
 import { cookies } from 'next/headers';
-import { getCloudflareContext } from '@opennextjs/cloudflare';
 
 const SESSION_COOKIE_NAME = 'memory_game_session';
 const SESSION_DURATION_DAYS = 7;
 
 // PostgreSQL client
 function getDB() {
-  // Try to get from Cloudflare context first (works in dev and production)
-  try {
-    const { env } = getCloudflareContext();
-    if (env.SUPABASE_CONNECTION_STRING) {
-      return postgres(env.SUPABASE_CONNECTION_STRING);
-    }
-  } catch (e) {
-    // Cloudflare context not available, fallback to process.env
-  }
-
-  // Fallback to process.env
   const connectionString = process.env.SUPABASE_CONNECTION_STRING;
   if (!connectionString) {
-    throw new Error('SUPABASE_CONNECTION_STRING is not defined in Cloudflare env or process.env');
+    throw new Error('SUPABASE_CONNECTION_STRING is not defined');
   }
   return postgres(connectionString);
 }
@@ -126,7 +114,7 @@ export async function updateSession(sessionId: string, data: SessionData): Promi
 /**
  * Get session data value
  */
-export function getSessionData<T = any>(session: Session, key: string, defaultValue?: T): T {
+export function getSessionData<T = any>(session: Session, key: string, defaultValue?: T): T | undefined {
   return (session.data[key] as T) ?? defaultValue;
 }
 

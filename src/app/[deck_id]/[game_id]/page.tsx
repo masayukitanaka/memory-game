@@ -7,6 +7,7 @@ import Confetti from '@/components/Confetti';
 import WinnerModal from '@/components/WinnerModal';
 import { getSessionInfo, setPlayerName, getAllSessions, sendHeartbeat } from './actions';
 import { fetchGameById } from '@/app/actions/games';
+import { useGameWebSocket } from '@/hooks/useGameWebSocket';
 
 interface CardData {
   id: number;
@@ -54,6 +55,33 @@ export default function GamePage() {
       createdAt: string;
     }>;
   } | null>(null);
+
+  // WebSocket connection for real-time synchronization
+  const { sendMessage } = useGameWebSocket({
+    gameId,
+    sessionId: sessionInfo?.sessionId || '',
+    onGameEnd: (winner) => {
+      setWinner(winner);
+      setShowConfetti(true);
+      setTimeout(() => {
+        setShowWinnerModal(true);
+      }, 500);
+    },
+    onCardsUpdated: (updatedCards) => {
+      setCards(updatedCards);
+    },
+    onPlayersUpdated: (updatedPlayers) => {
+      setPlayers(updatedPlayers);
+    },
+    onCardFlipped: ({ cardId, isFlipped }) => {
+      setCards((prevCards) =>
+        prevCards.map((c) => (c.id === cardId ? { ...c, isFlipped } : c))
+      );
+    },
+    onPlayerSwitched: ({ currentPlayerIndex: newIndex }) => {
+      setCurrentPlayerIndex(newIndex);
+    },
+  });
 
   useEffect(() => {
     // Load session info
@@ -222,6 +250,27 @@ export default function GamePage() {
       // Refresh sessions list
       const data = await getAllSessions();
       setAllSessions(data);
+    }
+  };
+
+  const handleTestGameEnd = () => {
+    // Simulate game end for testing
+    if (players.length > 0) {
+      const sortedPlayers = [...players].sort((a, b) => b.score - a.score);
+      const winnerPlayer = sortedPlayers[0];
+
+      // Broadcast game end to all connected clients via WebSocket
+      sendMessage({
+        type: 'game_end',
+        data: { winner: winnerPlayer },
+      });
+
+      // Also update local state
+      setWinner(winnerPlayer);
+      setShowConfetti(true);
+      setTimeout(() => {
+        setShowWinnerModal(true);
+      }, 500);
     }
   };
 
@@ -442,8 +491,16 @@ export default function GamePage() {
           ))}
         </div>
 
-        <div className="mt-8 text-center text-sm text-gray-500">
-          Click on cards to flip them
+        <div className="mt-8 text-center">
+          <p className="text-sm text-gray-500 mb-4">Click on cards to flip them</p>
+
+          {/* Test Button */}
+          <button
+            onClick={handleTestGameEnd}
+            className="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-6 rounded-lg transition-colors shadow-lg"
+          >
+            🎉 Test Game End
+          </button>
         </div>
       </div>
     </div>
