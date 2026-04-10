@@ -33,6 +33,7 @@ export default function GamePage() {
   const [cards, setCards] = useState<CardData[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
   const [currentPlayerIndex, setCurrentPlayerIndex] = useState<number>(0);
+  const [currentTurnSessionId, setCurrentTurnSessionId] = useState<string | null>(null);
   const [flippedCards, setFlippedCards] = useState<number[]>([]);
   const [isChecking, setIsChecking] = useState<boolean>(false);
   const [showConfetti, setShowConfetti] = useState<boolean>(false);
@@ -57,9 +58,25 @@ export default function GamePage() {
   } | null>(null);
 
   // WebSocket connection for real-time synchronization
+  // Only connect when sessionInfo is available
   const { sendMessage } = useGameWebSocket({
     gameId,
     sessionId: sessionInfo?.sessionId || '',
+    enabled: !!sessionInfo,  // Only connect if sessionInfo is loaded
+    onConnected: () => {
+      console.log('[Page] WebSocket connected, sessionId:', sessionInfo?.sessionId);
+      // Register player immediately after connection
+      if (sessionInfo) {
+        console.log('[Page] Sending register_player');
+        sendMessage({
+          type: 'register_player',
+          data: {
+            sessionId: sessionInfo.sessionId,
+            playerName: sessionInfo.playerName,
+          },
+        });
+      }
+    },
     onGameEnd: (winner) => {
       setWinner(winner);
       setShowConfetti(true);
@@ -71,15 +88,85 @@ export default function GamePage() {
       setCards(updatedCards);
     },
     onPlayersUpdated: (updatedPlayers) => {
-      setPlayers(updatedPlayers);
+      // Convert server Player format (with sessionId) to client Player format (with id)
+      const clientPlayers = updatedPlayers.map((p: any, index: number) => ({
+        id: index + 1,
+        name: p.name,
+        score: p.score,
+      }));
+      setPlayers(clientPlayers);
     },
     onCardFlipped: ({ cardId, isFlipped }) => {
+      // Update card flip state
       setCards((prevCards) =>
         prevCards.map((c) => (c.id === cardId ? { ...c, isFlipped } : c))
       );
+
+      // Add to flipped cards if flipping (not unflipping)
+      if (isFlipped) {
+        setFlippedCards((prev) => {
+          if (!prev.includes(cardId)) {
+            const newFlipped = [...prev, cardId];
+            // Set isChecking when 2 cards are flipped
+            if (newFlipped.length === 2) {
+              setIsChecking(true);
+            }
+            return newFlipped;
+          }
+          return prev;
+        });
+      }
     },
-    onPlayerSwitched: ({ currentPlayerIndex: newIndex }) => {
+    onPlayerSwitched: ({ sessionId, currentPlayerIndex: newIndex }) => {
+      console.log('Received player_switched:', sessionId, newIndex);
+      setCurrentTurnSessionId(sessionId);
       setCurrentPlayerIndex(newIndex);
+    },
+    onCardsMatched: ({ cardIds, players: updatedPlayers }) => {
+      // Update cards to matched
+      setCards((prevCards) =>
+        prevCards.map((c) =>
+          cardIds.includes(c.id) ? { ...c, isMatched: true } : c
+        )
+      );
+      // Update players scores - convert server format to client format
+      const clientPlayers = updatedPlayers.map((p: any, index: number) => ({
+        id: index + 1,
+        name: p.name,
+        score: p.score,
+      }));
+      setPlayers(clientPlayers);
+      // Reset flipped cards and checking state
+      setFlippedCards([]);
+      setIsChecking(false);
+    },
+    onCardsUnmatched: ({ cardIds }) => {
+      console.log('Received cards_unmatched:', cardIds);
+      // Flip cards back
+      setCards((prevCards) =>
+        prevCards.map((c) =>
+          cardIds.includes(c.id) ? { ...c, isFlipped: false } : c
+        )
+      );
+      // Reset flipped cards and checking state
+      setFlippedCards([]);
+      setIsChecking(false);
+    },
+    onCurrentTurn: ({ sessionId }) => {
+      console.log('[Page] Received current_turn from server:', sessionId);
+      if (sessionId) {
+        setCurrentTurnSessionId(sessionId);
+        // Find the index of this sessionId in sorted sessions
+        if (allSessions) {
+          const sortedSessions = [...allSessions.sessions]
+            .sort((a, b) => a.sessionId.localeCompare(b.sessionId))
+            .slice(0, 2);
+          const index = sortedSessions.findIndex(s => s.sessionId === sessionId);
+          if (index !== -1) {
+            setCurrentPlayerIndex(index);
+          }
+        }
+      }
     },
   });
 
@@ -88,6 +175,7 @@ export default function GamePage() {
     getSessionInfo().then((info) => {
       setSessionInfo(info);
       setNameInput(info.playerName);
+      // Note: Player registration now happens in onConnected callback
     });
 
     // Send initial heartbeat immediately
@@ -119,9 +207,17 @@ export default function GamePage() {
   // Update players list when sessions change
   useEffect(() => {
     if (allSessions && allSessions.sessions.length > 0) {
-      const newPlayers: Player[] = allSessions.sessions.slice(0, 2).map((session, index) => {
-        // Keep existing score if player already exists
-        const existingPlayer = players.find((p) => p.id === index + 1);
+      // Sort sessions by sessionId to ensure consistent order across all clients
+      const sortedSessions = [...allSessions.sessions]
+        .sort((a, b) => a.sessionId.localeCompare(b.sessionId))
+        .slice(0, 2);
+
+      const newPlayers: Player[] = sortedSessions.map((session, index) => {
+        // Keep existing score if player already exists with same sessionId
+        const existingPlayer = players.find((p) => {
+          const existingSession = allSessions.sessions.find(s => s.playerName === p.name);
+          return existingSession?.sessionId === session.sessionId;
+        });
         return {
           id: index + 1,
           name: session.playerName,
@@ -133,8 +229,11 @@ export default function GamePage() {
       if (JSON.stringify(newPlayers.map((p) => p.name)) !== JSON.stringify(players.map((p) => p.name))) {
         setPlayers(newPlayers);
       }
+
+      // Note: currentTurnSessionId is now managed by the Durable Object and synced via WebSocket
+      // Do not initialize it locally anymore
     }
-  }, [allSessions]);
+  }, [allSessions, currentTurnSessionId, players]);
 
   useEffect(() => {
     // Load game data from database
@@ -146,88 +245,45 @@ export default function GamePage() {
 
       // Use the shuffled cards from the database
       setCards(game.cards);
+
+      // Initialize game on server
+      sendMessage({
+        type: 'init_game',
+        data: { cards: game.cards },
+      });
     });
-  }, [gameId]);
+  }, [gameId, sendMessage]);
 
   const handleCardClick = (id: number) => {
+    console.log('[handleCardClick] Card clicked:', id);
+    console.log('[handleCardClick] isChecking:', isChecking, 'flippedCards.length:', flippedCards.length);
+
     // Prevent clicking during checking or if card is already flipped/matched
-    if (isChecking || flippedCards.length >= 2) return;
+    if (isChecking || flippedCards.length >= 2) {
+      console.log('[handleCardClick] Blocked: isChecking or too many flipped cards');
+      return;
+    }
 
     const card = cards.find((c) => c.id === id);
-    if (!card || card.isFlipped || card.isMatched) return;
-
-    // Flip the card
-    const newFlippedCards = [...flippedCards, id];
-    setFlippedCards(newFlippedCards);
-
-    setCards((prevCards) =>
-      prevCards.map((c) => (c.id === id ? { ...c, isFlipped: true } : c))
-    );
-
-    // Check for match when 2 cards are flipped
-    if (newFlippedCards.length === 2) {
-      setIsChecking(true);
-
-      setTimeout(() => {
-        checkForMatch(newFlippedCards);
-      }, 1000);
-    }
-  };
-
-  const checkForMatch = (flippedCardIds: number[]) => {
-    const [firstId, secondId] = flippedCardIds;
-    const firstCard = cards.find((c) => c.id === firstId);
-    const secondCard = cards.find((c) => c.id === secondId);
-
-    if (firstCard && secondCard && firstCard.pairId === secondCard.pairId) {
-      // Match found!
-      setCards((prevCards) =>
-        prevCards.map((c) =>
-          c.id === firstId || c.id === secondId ? { ...c, isMatched: true } : c
-        )
-      );
-
-      // Award point to current player
-      setPlayers((prevPlayers) =>
-        prevPlayers.map((p, index) =>
-          index === currentPlayerIndex ? { ...p, score: p.score + 1 } : p
-        )
-      );
-
-      // Check if game is over
-      setTimeout(() => {
-        checkGameOver();
-      }, 500);
-    } else {
-      // No match - flip cards back
-      setCards((prevCards) =>
-        prevCards.map((c) =>
-          c.id === firstId || c.id === secondId ? { ...c, isFlipped: false } : c
-        )
-      );
-
-      // Switch player
-      setCurrentPlayerIndex((prev) => (prev + 1) % players.length);
+    console.log('[handleCardClick] Card found:', card);
+    if (!card || card.isFlipped || card.isMatched) {
+      console.log('[handleCardClick] Blocked: card invalid, already flipped, or matched');
+      return;
     }
 
-    setFlippedCards([]);
-    setIsChecking(false);
-  };
-
-  const checkGameOver = () => {
-    const allMatched = cards.every((c) => c.isMatched);
-
-    if (allMatched) {
-      // Game over!
-      const sortedPlayers = [...players].sort((a, b) => b.score - a.score);
-      const winnerPlayer = sortedPlayers[0];
-      setWinner(winnerPlayer);
-
-      setShowConfetti(true);
-      setTimeout(() => {
-        setShowWinnerModal(true);
-      }, 500);
+    // Only allow current player to click (check by sessionId)
+    console.log('[handleCardClick] Turn check - sessionInfo:', sessionInfo?.sessionId, 'currentTurn:', currentTurnSessionId);
+    if (!sessionInfo || sessionInfo.sessionId !== currentTurnSessionId) {
+      console.log('[handleCardClick] Blocked: Not your turn. Current turn:', currentTurnSessionId, 'Your session:', sessionInfo?.sessionId);
+      return; // Not this player's turn
     }
+
+    console.log('[handleCardClick] Sending card_click to server');
+    // Send card click to server (server will handle all logic)
+    sendMessage({
+      type: 'card_click',
+      data: { cardId: id },
+    });
   };
 
   const handleCloseModal = () => {
@@ -253,26 +309,6 @@ export default function GamePage() {
     }
   };
 
-  const handleTestGameEnd = () => {
-    // Simulate game end for testing
-    if (players.length > 0) {
-      const sortedPlayers = [...players].sort((a, b) => b.score - a.score);
-      const winnerPlayer = sortedPlayers[0];
-
-      // Broadcast game end to all connected clients via WebSocket
-      sendMessage({
-        type: 'game_end',
-        data: { winner: winnerPlayer },
-      });
-
-      // Also update local state
-      setWinner(winnerPlayer);
-      setShowConfetti(true);
-      setTimeout(() => {
-        setShowWinnerModal(true);
-      }, 500);
-    }
-  };
 
   if (deckNotFound) {
     return (
@@ -440,20 +476,32 @@ export default function GamePage() {
         {/* Players Score Board */}
         <div className="mb-8 flex justify-center gap-6">
           {players.length > 0 ? (
-            players.map((player, index) => {
-              const isCurrentUser = allSessions && allSessions.sessions[index]?.sessionId === allSessions.currentSessionId;
-              return (
+            (() => {
+              // Sort sessions to match player order
+              const sortedSessions = allSessions
+                ? [...allSessions.sessions].sort((a, b) => a.sessionId.localeCompare(b.sessionId)).slice(0, 2)
+                : [];
+
+              console.log('Current Turn SessionId:', currentTurnSessionId);
+              console.log('Sorted Sessions:', sortedSessions.map(s => ({ id: s.sessionId, name: s.playerName })));
+
+              return players.map((player, index) => {
+                const session = sortedSessions[index];
+                const isCurrentUser = session?.sessionId === allSessions?.currentSessionId;
+                const isCurrentTurn = session?.sessionId === currentTurnSessionId;
+                console.log(`Player ${index} (${player.name}): sessionId=${session?.sessionId}, isCurrentTurn=${isCurrentTurn}, isCurrentUser=${isCurrentUser}`);
+                return (
                 <div
                   key={player.id}
                   className={`bg-white rounded-xl shadow-lg p-6 min-w-[200px] transition-all ${
-                    index === currentPlayerIndex
+                    isCurrentTurn
                       ? 'ring-4 ring-indigo-500 scale-105'
                       : 'opacity-70'
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <div>
-                      <div className="flex items-center gap-2">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-2">
                         <h3 className="text-lg font-semibold text-gray-800">{player.name}</h3>
                         {isCurrentUser && (
                           <span className="text-xs bg-green-600 text-white px-2 py-0.5 rounded-full">
@@ -461,15 +509,21 @@ export default function GamePage() {
                           </span>
                         )}
                       </div>
-                      {index === currentPlayerIndex && (
-                        <p className="text-sm text-indigo-600 font-medium">Current Turn</p>
+                      {isCurrentTurn ? (
+                        <p className="text-sm text-indigo-600 font-bold flex items-center gap-1">
+                          <span className="inline-block w-2 h-2 bg-indigo-600 rounded-full animate-pulse"></span>
+                          Current Turn
+                        </p>
+                      ) : (
+                        <p className="text-sm text-gray-400">Waiting...</p>
                       )}
                     </div>
                     <div className="text-3xl font-bold text-indigo-600">{player.score}</div>
                   </div>
                 </div>
               );
-            })
+            });
+          })()
           ) : (
             <div className="text-gray-500 text-sm">
               Waiting for players to connect...
@@ -492,15 +546,7 @@ export default function GamePage() {
         </div>
 
         <div className="mt-8 text-center">
-          <p className="text-sm text-gray-500 mb-4">Click on cards to flip them</p>
-
-          {/* Test Button */}
-          <button
-            onClick={handleTestGameEnd}
-            className="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-6 rounded-lg transition-colors shadow-lg"
-          >
-            🎉 Test Game End
-          </button>
+          <p className="text-sm text-gray-500">Click on cards to flip them</p>
         </div>
       </div>
     </div>

@@ -10,7 +10,7 @@ export default {
 		},
 		// Export Durable Objects
 		additionalExports: {
-			GameRoom: './src/durable-objects/GameRoom',
+			GameRoom: '/Users/mtanaka/Dev/WebProjects/memory-game/src/durable-objects/GameRoom.ts',
 		},
 	},
 	edgeExternals: ["node:crypto"],

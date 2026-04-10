@@ -3,10 +3,11 @@
 	"version": "0.1.0",
 	"private": true,
 	"scripts": {
-		"dev": "next dev",
+		"dev": "npm run build && wrangler dev --port 8787",
 		"build": "next build",
 		"start": "next start",
 		"lint": "next lint",
+		"wrangler:dev": "npm run build && opennextjs-cloudflare build && node scripts/patch-worker.js && wrangler dev --port 8787",
 		"deploy": "opennextjs-cloudflare build && node scripts/patch-worker.js && opennextjs-cloudflare deploy",
 		"upload": "opennextjs-cloudflare build && node scripts/patch-worker.js && opennextjs-cloudflare upload",
 		"preview": "opennextjs-cloudflare build && node scripts/patch-worker.js && opennextjs-cloudflare preview",
@@ -31,6 +32,6 @@
 		"eslint-config-next": "15.4.6",
 		"tailwindcss": "^4",
 		"typescript": "^5.7.4",
-		"wrangler": "^4.78.0"
+		"wrangler": "^4.81.1"
 	}
 }

@@ -1,26 +1,28 @@
 import { DurableObject } from "cloudflare:workers";
 
+interface Card {
+  id: number;
+  content: string;
+  pairId: number;
+  isFlipped: boolean;
+  isMatched: boolean;
+  rotation: number;
+}
+
+interface Player {
+  sessionId: string;
+  name: string;
+  score: number;
+}
+
 interface GameState {
-  cards: Array<{
-    id: number;
-    content: string;
-    pairId: number;
-    isFlipped: boolean;
-    isMatched: boolean;
-    rotation: number;
-  }>;
-  players: Array<{
-    id: number;
-    name: string;
-    score: number;
-  }>;
-  currentPlayerIndex: number;
-  status: string;
-  winner: {
-    id: number;
-    name: string;
-    score: number;
-  } | null;
+  cards: Card[];
+  players: Player[];
+  currentTurnSessionId: string | null;
+  flippedCards: number[];
+  isProcessing: boolean;
+  status: 'waiting' | 'active' | 'finished';
+  winner: Player | null;
 }
 
 interface WebSocketClient {
@@ -38,8 +40,10 @@ export class GameRoom extends DurableObject {
     this.gameState = {
       cards: [],
       players: [],
-      currentPlayerIndex: 0,
-      status: 'active',
+      currentTurnSessionId: null,
+      flippedCards: [],
+      isProcessing: false,
+      status: 'waiting',
       winner: null,
     };
   }
@@ -88,11 +92,29 @@ export class GameRoom extends DurableObject {
     const client: WebSocketClient = { socket: webSocket, sessionId };
     this.clients.add(client);
 
+    // Initialize currentTurnSessionId if this is the first client or it's not set
+    if (!this.gameState.currentTurnSessionId) {
+      // Get all connected sessionIds and sort them to ensure consistency
+      const allSessionIds = Array.from(this.clients).map(c => c.sessionId).sort();
+      if (allSessionIds.length > 0) {
+        this.gameState.currentTurnSessionId = allSessionIds[0];
+        console.log('[GameRoom] Initialized currentTurnSessionId to:', this.gameState.currentTurnSessionId);
+      }
+    }
+
     // Send current game state to the new client
     webSocket.send(JSON.stringify({
       type: 'state',
       data: this.gameState,
     }));
+
+    // Send current turn state to the new client
+    webSocket.send(JSON.stringify({
+      type: 'current_turn',
+      data: { sessionId: this.gameState.currentTurnSessionId },
+    }));
+
+    console.log('[GameRoom] Client connected:', sessionId, 'Current turn:', this.gameState.currentTurnSessionId);
 
     // Handle incoming messages
     webSocket.addEventListener("message", (event) => {
@@ -112,8 +134,14 @@ export class GameRoom extends DurableObject {
 
   handleMessage(message: any, sender: WebSocketClient) {
     switch (message.type) {
-      case 'flip_card':
-        this.handleFlipCard(message.data);
+      case 'init_game':
+        this.handleInitGame(message.data, sender);
+        break;
+      case 'register_player':
+        this.handleRegisterPlayer(message.data, sender);
+        break;
+      case 'card_click':
+        this.handleCardClick(message.data, sender);
         break;
       case 'update_cards':
         this.handleUpdateCards(message.data);
@@ -121,79 +149,228 @@ export class GameRoom extends DurableObject {
       case 'update_players':
         this.handleUpdatePlayers(message.data);
         break;
-      case 'game_end':
-        this.handleGameEnd(message.data);
-        break;
-      case 'switch_player':
-        this.handleSwitchPlayer(message.data);
-        break;
       default:
         console.log('Unknown message type:', message.type);
     }
   }
 
-  handleFlipCard(data: { cardId: number; isFlipped: boolean }) {
-    const card = this.gameState.cards.find(c => c.id === data.cardId);
-    if (card) {
-      card.isFlipped = data.isFlipped;
-      this.broadcast({
-        type: 'card_flipped',
-        data: { cardId: data.cardId, isFlipped: data.isFlipped },
+  handleInitGame(data: { cards: Card[] }, sender: WebSocketClient) {
+    if (this.gameState.cards.length === 0) {
+      this.gameState.cards = data.cards;
+      this.gameState.status = 'active';
+      console.log('[GameRoom] Game initialized with', data.cards.length, 'cards');
+
+      // Broadcast initial state to all clients
+      this.broadcastAll({
+        type: 'state',
+        data: this.gameState,
       });
     }
   }
 
-  handleUpdateCards(data: { cards: GameState['cards'] }) {
+  handleRegisterPlayer(data: { sessionId: string; playerName: string }, sender: WebSocketClient) {
+    // Check if player already exists
+    const existingPlayer = this.gameState.players.find(p => p.sessionId === data.sessionId);
+    if (!existingPlayer) {
+      this.gameState.players.push({
+        sessionId: data.sessionId,
+        name: data.playerName,
+        score: 0,
+      });
+      console.log('[GameRoom] Player registered:', data.playerName, data.sessionId);
+
+      // Initialize turn to first player if not set
+      if (!this.gameState.currentTurnSessionId && this.gameState.players.length > 0) {
+        const sortedPlayers = [...this.gameState.players].sort((a, b) =>
+          a.sessionId.localeCompare(b.sessionId)
+        );
+        this.gameState.currentTurnSessionId = sortedPlayers[0].sessionId;
+      }
+
+      // Broadcast updated players to all clients
+      this.broadcastAll({
+        type: 'players_updated',
+        data: { players: this.gameState.players },
+      });
+
+      this.broadcastAll({
+        type: 'current_turn',
+        data: { sessionId: this.gameState.currentTurnSessionId },
+      });
+    }
+  }
+
+  handleCardClick(data: { cardId: number }, sender: WebSocketClient) {
+    // Validate it's the sender's turn
+    if (sender.sessionId !== this.gameState.currentTurnSessionId) {
+      console.log('[GameRoom] Invalid turn. Current:', this.gameState.currentTurnSessionId, 'Sender:', sender.sessionId);
+      return;
+    }
+
+    // Prevent clicking if already processing or game is over
+    if (this.gameState.isProcessing || this.gameState.status !== 'active') {
+      return;
+    }
+
+    const card = this.gameState.cards.find(c => c.id === data.cardId);
+    if (!card || card.isFlipped || card.isMatched) {
+      return;
+    }
+
+    // Flip the card
+    card.isFlipped = true;
+    this.gameState.flippedCards.push(data.cardId);
+
+    // Broadcast card flip
+    this.broadcastAll({
+      type: 'card_flipped',
+      data: { cardId: data.cardId, isFlipped: true },
+    });
+
+    // Check if two cards are flipped
+    if (this.gameState.flippedCards.length === 2) {
+      this.gameState.isProcessing = true;
+      this.checkForMatch();
+    }
+  }
+
+  checkForMatch() {
+    const [firstId, secondId] = this.gameState.flippedCards;
+    const firstCard = this.gameState.cards.find(c => c.id === firstId);
+    const secondCard = this.gameState.cards.find(c => c.id === secondId);
+
+    if (!firstCard || !secondCard) {
+      this.gameState.isProcessing = false;
+      return;
+    }
+
+    if (firstCard.pairId === secondCard.pairId) {
+      // Match found!
+      console.log('[GameRoom] Cards matched:', firstId, secondId);
+      firstCard.isMatched = true;
+      secondCard.isMatched = true;
+
+      // Award point to current player
+      const currentPlayer = this.gameState.players.find(
+        p => p.sessionId === this.gameState.currentTurnSessionId
+      );
+      if (currentPlayer) {
+        currentPlayer.score += 1;
+      }
+
+      // Broadcast match
+      this.broadcastAll({
+        type: 'cards_matched',
+        data: {
+          cardIds: [firstId, secondId],
+          players: this.gameState.players,
+        },
+      });
+
+      // Reset flipped cards
+      this.gameState.flippedCards = [];
+      this.gameState.isProcessing = false;
+
+      // Check if game is over
+      if (this.gameState.cards.every(c => c.isMatched)) {
+        this.endGame();
+      }
+    } else {
+      // No match - flip cards back after delay
+      console.log('[GameRoom] Cards did not match. Flipping back in 1 second.');
+
+      setTimeout(() => {
+        firstCard.isFlipped = false;
+        secondCard.isFlipped = false;
+
+        // Broadcast cards flipping back
+        this.broadcastAll({
+          type: 'cards_unmatched',
+          data: { cardIds: [firstId, secondId] },
+        });
+
+        // Switch to next player
+        this.switchToNextPlayer();
+
+        // Reset state
+        this.gameState.flippedCards = [];
+        this.gameState.isProcessing = false;
+      }, 1000);
+    }
+  }
+
+  switchToNextPlayer() {
+    const sortedPlayers = [...this.gameState.players].sort((a, b) =>
+      a.sessionId.localeCompare(b.sessionId)
+    );
+
+    const currentIndex = sortedPlayers.findIndex(
+      p => p.sessionId === this.gameState.currentTurnSessionId
+    );
+
+    const nextIndex = (currentIndex + 1) % sortedPlayers.length;
+    this.gameState.currentTurnSessionId = sortedPlayers[nextIndex].sessionId;
+
+    console.log('[GameRoom] Turn switched to:', this.gameState.currentTurnSessionId);
+
+    // Broadcast player switch
+    this.broadcastAll({
+      type: 'player_switched',
+      data: {
+        sessionId: this.gameState.currentTurnSessionId,
+        currentPlayerIndex: nextIndex
+      },
+    });
+  }
+
+  endGame() {
+    this.gameState.status = 'finished';
+
+    // Find winner (highest score)
+    const sortedPlayers = [...this.gameState.players].sort((a, b) => b.score - a.score);
+    this.gameState.winner = sortedPlayers[0];
+
+    console.log('[GameRoom] Game ended. Winner:', this.gameState.winner?.name);
+
+    // Broadcast game end
+    this.broadcastAll({
+      type: 'game_end',
+      data: { winner: this.gameState.winner },
+    });
+  }
+
+  handleUpdateCards(data: { cards: Card[] }) {
     this.gameState.cards = data.cards;
-    this.broadcast({
+    this.broadcastAll({
       type: 'cards_updated',
       data: { cards: data.cards },
     });
   }
 
-  handleUpdatePlayers(data: { players: GameState['players'] }) {
+  handleUpdatePlayers(data: { players: Player[] }) {
     this.gameState.players = data.players;
-    this.broadcast({
+    this.broadcastAll({
       type: 'players_updated',
       data: { players: data.players },
     });
   }
 
-  handleGameEnd(data: { winner: GameState['winner'] }) {
-    this.gameState.status = 'finished';
-    this.gameState.winner = data.winner;
-    this.broadcast({
-      type: 'game_end',
-      data: { winner: data.winner },
-    });
-  }
-
-  handleSwitchPlayer(data: { currentPlayerIndex: number }) {
-    this.gameState.currentPlayerIndex = data.currentPlayerIndex;
-    this.broadcast({
-      type: 'player_switched',
-      data: { currentPlayerIndex: data.currentPlayerIndex },
-    });
-  }
-
   updateGameState(updates: Partial<GameState>) {
     this.gameState = { ...this.gameState, ...updates };
-    this.broadcast({
+    this.broadcastAll({
       type: 'state',
       data: this.gameState,
     });
   }
 
-  broadcast(message: any, excludeClient?: WebSocketClient) {
+  broadcastAll(message: any) {
     const messageStr = JSON.stringify(message);
     for (const client of this.clients) {
-      if (client !== excludeClient) {
-        try {
-          client.socket.send(messageStr);
-        } catch (error) {
-          console.error("Error sending message to client:", error);
-          this.clients.delete(client);
-        }
+      try {
+        client.socket.send(messageStr);
+      } catch (error) {
+        console.error("Error sending message to client:", error);
+        this.clients.delete(client);
       }
     }
   }

@@ -3,26 +3,42 @@ import { useEffect, useRef, useCallback } from 'react';
 interface GameWebSocketOptions {
   gameId: string;
   sessionId: string;
+  enabled?: boolean;  // Control whether to connect
   onGameEnd: (winner: any) => void;
   onCardsUpdated: (cards: any[]) => void;
   onPlayersUpdated: (players: any[]) => void;
   onCardFlipped: (data: { cardId: number; isFlipped: boolean }) => void;
-  onPlayerSwitched: (data: { currentPlayerIndex: number }) => void;
+  onPlayerSwitched: (data: { sessionId: string; currentPlayerIndex: number }) => void;
+  onCardsMatched?: (data: { cardIds: number[]; currentPlayerIndex: number; players: any[] }) => void;
+  onCardsUnmatched?: (data: { cardIds: number[] }) => void;
+  onCurrentTurn?: (data: { sessionId: string | null }) => void;
+  onConnected?: () => void;
 }
 
 export function useGameWebSocket({
   gameId,
   sessionId,
+  enabled = true,
   onGameEnd,
   onCardsUpdated,
   onPlayersUpdated,
   onCardFlipped,
   onPlayerSwitched,
+  onCardsMatched,
+  onCardsUnmatched,
+  onCurrentTurn,
+  onConnected,
 }: GameWebSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const connect = useCallback(() => {
+    // Don't connect if not enabled or sessionId is empty
+    if (!enabled || !sessionId) {
+      console.log('[WebSocket] Connection disabled or sessionId missing:', { enabled, sessionId });
+      return;
+    }
+
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       return;
     }
@@ -31,10 +47,12 @@ export function useGameWebSocket({
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/api/game/${gameId}/ws?sessionId=${sessionId}`;
 
+    console.log('[WebSocket] Connecting to:', wsUrl);
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
       console.log('WebSocket connected');
+      onConnected?.();
     };
 
     ws.onmessage = (event) => {
@@ -56,6 +74,17 @@ export function useGameWebSocket({
             break;
           case 'player_switched':
             onPlayerSwitched(message.data);
+            break;
+          case 'cards_matched':
+            onCardsMatched?.(message.data);
+            break;
+          case 'cards_unmatched':
+            onCardsUnmatched?.(message.data);
+            break;
+          case 'current_turn':
+            // Receive current turn state from server
+            console.log('[WebSocket] Received current_turn:', message.data);
+            onCurrentTurn?.(message.data);
             break;
           case 'state':
             // Initial state sync
@@ -90,7 +119,7 @@ export function useGameWebSocket({
     };
 
     wsRef.current = ws;
-  }, [gameId, sessionId, onGameEnd, onCardsUpdated, onPlayersUpdated, onCardFlipped, onPlayerSwitched]);
+  }, [gameId, sessionId, enabled, onGameEnd, onCardsUpdated, onPlayersUpdated, onCardFlipped, onPlayerSwitched, onCardsMatched, onCardsUnmatched, onCurrentTurn, onConnected]);
 
   const sendMessage = useCallback((message: any) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
